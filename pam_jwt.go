@@ -1,4 +1,4 @@
-// +build darwin linux
+//go:build darwin || linux
 
 /*
 Copyright (c) 2017 Uber Technologies, Inc.
@@ -29,14 +29,15 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"github.com/square/go-jose/v3"
-	"github.com/square/go-jose/v3/jwt"
-	"io/ioutil"
+	"io"
 	"log/syslog"
 	"net/http"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 // AuthResult is the result of the authenticate function.
@@ -69,7 +70,7 @@ func authenticateByUrl(url, username, authToken, domain string, verifyUser bool)
 		Timeout: time.Second * 2,
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url + "=" + authToken, nil)
+	req, err := http.NewRequest(http.MethodGet, url+"="+authToken, nil)
 	if err != nil {
 		return "", AuthError
 	}
@@ -88,7 +89,7 @@ func authenticateByUrl(url, username, authToken, domain string, verifyUser bool)
 		defer resp.Body.Close()
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		pamLog("Cannot read response from server. Failing authentication.")
 		return "", AuthError
@@ -107,15 +108,14 @@ func authenticateByUrl(url, username, authToken, domain string, verifyUser bool)
 		return "", AuthError
 	}
 
-	if verifyUser && (
-		standard.Subject != username && standard.Subject+domain != username) {
+	if verifyUser && (standard.Subject != username && standard.Subject+domain != username) {
 		pamLog("Subject %s does not equal user name %s", standard.Subject, username)
 		return "", AuthError
 	}
 
 	pamLog("Authentication succeeded for %s", standard.Subject+domain)
 
-	return standard.Subject+domain, AuthSuccess
+	return standard.Subject + domain, AuthSuccess
 }
 
 // authenticate validates the token and returns the user name
@@ -132,11 +132,16 @@ func authenticate(username, url, authToken, secret, signingKey, alg, issuer, dom
 }
 
 func authenticateByJwt(username, authToken, secret, signingKey, alg, issuer, domain string, verifyUser bool) (string, AuthResult) {
+	keyAlgs := []jose.KeyAlgorithm{jose.DIRECT}
+	signatureAlgs := []jose.SignatureAlgorithm{jose.EdDSA, jose.ES384, jose.PS384, jose.PS256, jose.HS384, jose.HS256, jose.RS384, jose.RS256}
+	encryptionCiphers := []jose.ContentEncryption{jose.A256GCM, jose.A192GCM, jose.A128GCM, jose.A192CBC_HS384, jose.A128CBC_HS256}
+
 	standard := jwt.Claims{}
 	if len(secret) > 0 && len(signingKey) > 0 {
-		enc, err := jwt.ParseSignedAndEncrypted(authToken)
+		enc, err := jwt.ParseSignedAndEncrypted(authToken, keyAlgs, encryptionCiphers, signatureAlgs)
 		if err != nil {
 			pamLog("Cannot get token %s", err)
+
 			return "", AuthError
 		}
 		token, err := enc.Decrypt(secret)
@@ -153,7 +158,7 @@ func authenticateByJwt(username, authToken, secret, signingKey, alg, issuer, dom
 			return "", AuthError
 		}
 	} else if len(signingKey) == 0 {
-		token, err := jwt.ParseEncrypted(authToken)
+		token, err := jwt.ParseEncrypted(authToken, keyAlgs, encryptionCiphers)
 		if err != nil {
 			pamLog("Cannot get token %s", err)
 			return "", AuthError
@@ -164,7 +169,7 @@ func authenticateByJwt(username, authToken, secret, signingKey, alg, issuer, dom
 			return "", AuthError
 		}
 	} else {
-		token, err := jwt.ParseSigned(authToken)
+		token, err := jwt.ParseSigned(authToken, signatureAlgs)
 		if err != nil {
 			pamLog("Cannot get token %s", err)
 			return "", AuthError
@@ -183,7 +188,7 @@ func authenticateByJwt(username, authToken, secret, signingKey, alg, issuer, dom
 	// go-jose doesnt verify the expiry
 	err := standard.Validate(jwt.Expected{
 		Issuer: issuer,
-		Time: time.Now(),
+		Time:   time.Now(),
 	})
 
 	if err != nil {
@@ -193,7 +198,7 @@ func authenticateByJwt(username, authToken, secret, signingKey, alg, issuer, dom
 
 	pamLog("token validation succeeded for %s", standard.Subject)
 
-	return standard.Subject+domain, AuthSuccess
+	return standard.Subject + domain, AuthSuccess
 }
 
 func pamAuthenticate(username string, authToken string, argv []string) (string, AuthResult) {

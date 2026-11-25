@@ -1,4 +1,4 @@
-MODULE := pam_ussh
+MODULE := pam_jwt
 NEED_SYMLINK := $(shell if ! stat -q .go/src/pam-ussh 2>&1 > /dev/null ; then echo "yes" ; fi)
 
 module: test
